@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Missile Command</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            width: 100%; height: 100%; overflow: hidden;
+            background: #000; display: flex; justify-content: center; align-items: center;
+            touch-action: none; overscroll-behavior: none;
+        }
+        #gameCanvas { cursor: none; display: block; image-rendering: pixelated; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <script>
+    (function() {
+    'use strict';
+
+    // ===== CONFIG =====
+    const CANVAS_WIDTH = 960;
+    const CANVAS_HEIGHT = 540;
+    const GROUND_Y = 500;
+    const GROUND_HEIGHT = 40;
+    const BASE_WIDTH = 40;
+    const BASE_HEIGHT = 30;
+    const BASE_AMMO = 10;
+    const BASE_POSITIONS = [
+        { x: 96, y: GROUND_Y },
+        { x: 480, y: GROUND_Y },
+        { x: 864, y: GROUND_Y },
+    ];
+    const CITY_WIDTH = 50;
+    const CITY_HEIGHT = 25;
+    const CITY_POSITIONS = [
+        { x: 192, y: GROUND_Y },
+        { x: 288, y: GROUND_Y },
+        { x: 384, y: GROUND_Y },
+        { x: 576, y: GROUND_Y },
+        { x: 672, y: GROUND_Y },
+        { x: 768, y: GROUND_Y },
+    ];
+    const PLAYER_MISSILE_SPEED = 500;
+    const EXPLOSION_MAX_RADIUS = 45;
+    const EXPLOSION_EXPAND_TIME = 0.4;
+    const EXPLOSION_HOLD_TIME = 0.15;
+    const EXPLOSION_CONTRACT_TIME = 0.35;
+    const SCORE_PER_ENEMY = 25;
+    const SCORE_PER_UNUSED_MISSILE = 5;
+    const SCORE_PER_SURVIVING_CITY = 100;
+    const BONUS_CITY_THRESHOLD = 10000;
+    const WAVES = [
+        { enemyCount: 8,  speed: 50,  spawnInterval: 2.0 },
+        { enemyCount: 10, speed: 55,  spawnInterval: 1.8 },
+        { enemyCount: 12, speed: 60,  spawnInterval: 1.5 },
+        { enemyCount: 14, speed: 65,  spawnInterval: 1.3 },
+        { enemyCount: 16, speed: 70,  spawnInterval: 1.1 },
+        { enemyCount: 18, speed: 80,  spawnInterval: 1.0 },
+        { enemyCount: 20, speed: 90,  spawnInterval: 0.9 },
+        { enemyCount: 22, speed: 100, spawnInterval: 0.8 },
+        { enemyCount: 24, speed: 110, spawnInterval: 0.7 },
+        { enemyCount: 26, speed: 120, spawnInterval: 0.6 },
+    ];
+    const WAVE_COLORS = [
+        { enemy: '#ff4444', trail: '#ff6666', sky: '#000011' },
+        { enemy: '#44ff44', trail: '#66ff66', sky: '#001100' },
+        { enemy: '#ff44ff', trail: '#ff66ff', sky: '#110011' },
+        { enemy: '#ffff44', trail: '#ffff66', sky: '#111100' },
+        { enemy: '#44ffff', trail: '#66ffff', sky: '#001111' },
+        { enemy: '#ff8844', trail: '#ffaa66', sky: '#110800' },
+    ];
+    const MIRV_MIN_WAVE = 4;
+    const MIRV_SPLIT_ALTITUDE = 200;
+    const MIRV_CHILDREN = 2;
+
+    // ===== ENTITIES =====
+
+    class Base {
+        constructor(x, y) {
+            this.x = x; this.y = y;
+            this.width = BASE_WIDTH; this.height = BASE_HEIGHT;
+            this.ammo = BASE_AMMO; this.alive = true;
+        }
+        reset() { this.alive = true; this.ammo = BASE_AMMO; }
+        hasAmmo() { return this.alive && this.ammo > 0; }
+        useAmmo() { if (this.ammo > 0) this.ammo--; }
+    }
+
+    class City {
+        constructor(x, y) {
+            this.x = x; this.y = y;
+            this.width = CITY_WIDTH; this.height = CITY_HEIGHT;
+            this.alive = true;
+            this.buildings = this.generateBuildings();
+        }
+        generateBuildings() {
+            const buildings = [];
+            const count = 4 + Math.floor(Math.random() * 3);
+            const slotWidth = this.width / count;
+            for (let i = 0; i < count; i++) {
+                buildings.push({
+                    x: this.x - this.width / 2 + i * slotWidth,
+                    w: slotWidth - 2,
+                    h: 8 + Math.random() * (this.height - 8),
+                });
+            }
+            return buildings;
+        }
+        destroy() { this.alive = false; }
+        restore() { this.alive = true; this.buildings = this.generateBuildings(); }
+    }
+
+    class PlayerMissile {
+        constructor(startX, startY, targetX, targetY) {
+            this.startX = startX; this.startY = startY;
+            this.targetX = targetX; this.targetY = targetY;
+            const dx = targetX - startX, dy = targetY - startY;
+            this.distance = Math.sqrt(dx * dx + dy * dy);
+            this.progress = 0; this.speed = PLAYER_MISSILE_SPEED;
+            this.done = false; this.arrived = false;
+        }
+        get currentX() { return this.startX + (this.targetX - this.startX) * this.progress; }
+        get currentY() { return this.startY + (this.targetY - this.startY) * this.progress; }
+        update(dt) {
+            if (this.done) return;
+            this.progress += (this.speed * dt) / this.distance;
+            if (this.progress >= 1) { this.progress = 1; this.done = true; this.arrived = true; }
+        }
+    }
+
+    class EnemyMissile {
+        constructor(startX, startY, targetX, targetY, speed) {
+            this.startX = startX; this.startY = startY;
+            this.targetX = targetX; this.targetY = targetY;
+            this.speed = speed;
+            const dx = targetX - startX, dy = targetY - startY;
+            this.distance = Math.sqrt(dx * dx + dy * dy);
+            this.progress = 0; this.done = false; this.destroyed = false;
+            this.isMirv = false; this.mirvSplit = false;
+        }
+        get currentX() { return this.startX + (this.targetX - this.startX) * this.progress; }
+        get currentY() { return this.startY + (this.targetY - this.startY) * this.progress; }
+        update(dt) {
+            if (this.done) return;
+            this.progress += (this.speed * dt) / this.distance;
+            if (this.progress >= 1) { this.progress = 1; this.done = true; }
+        }
+    }
+
+    class Explosion {
+        constructor(x, y, isEnemy) {
+            this.x = x; this.y = y;
+            this.maxRadius = isEnemy ? EXPLOSION_MAX_RADIUS * 0.5 : EXPLOSION_MAX_RADIUS;
+            this.radius = 0; this.time = 0; this.done = false;
+            this.isEnemy = !!isEnemy;
+            this.totalTime = EXPLOSION_EXPAND_TIME + EXPLOSION_HOLD_TIME + EXPLOSION_CONTRACT_TIME;
+        }
+        update(dt) {
+            if (this.done) return;
+            this.time += dt;
+            if (this.time < EXPLOSION_EXPAND_TIME) {
+                this.radius = this.maxRadius * (this.time / EXPLOSION_EXPAND_TIME);
+            } else if (this.time < EXPLOSION_EXPAND_TIME + EXPLOSION_HOLD_TIME) {
+                this.radius = this.maxRadius;
+            } else if (this.time < this.totalTime) {
+                const t = (this.time - EXPLOSION_EXPAND_TIME - EXPLOSION_HOLD_TIME) / EXPLOSION_CONTRACT_TIME;
+                this.radius = this.maxRadius * (1 - t);
+            } else {
+                this.radius = 0; this.done = true;
+            }
+        }
+    }
+
+    // ===== SYSTEMS =====
+
+    function checkCollisions(explosions, enemyMissiles) {
+        const destroyed = [];
+        for (const explosion of explosions) {
+            if (explosion.done || explosion.isEnemy) continue;
+            for (const missile of enemyMissiles) {
+                if (missile.done || missile.destroyed) continue;
+                const dx = explosion.x - missile.currentX, dy = explosion.y - missile.currentY;
+                if (Math.sqrt(dx * dx + dy * dy) < explosion.radius) {
+                    missile.destroyed = true; missile.done = true; destroyed.push(missile);
+                }
+            }
+        }
+        return destroyed;
+    }
+
+    function checkGroundHits(enemyMissiles, bases, cities) {
+        const hits = [];
+        for (const missile of enemyMissiles) {
+            if (!missile.done || missile.destroyed) continue;
+            let hitTarget = null, minDist = Infinity;
+            for (const base of bases) {
+                if (!base.alive) continue;
+                const d = Math.sqrt((missile.targetX - base.x) ** 2 + (missile.targetY - base.y) ** 2);
+                if (d < 30 && d < minDist) { minDist = d; hitTarget = base; }
+            }
+            for (const city of cities) {
+                if (!city.alive) continue;
+                const d = Math.sqrt((missile.targetX - city.x) ** 2 + (missile.targetY - city.y) ** 2);
+                if (d < 30 && d < minDist) { minDist = d; hitTarget = city; }
+            }
+            if (hitTarget) { hitTarget.alive = false; hits.push({ missile, target: hitTarget }); }
+        }
+        return hits;
+    }
+
+    class Spawner {
+        constructor() { this.reset(0); }
+        reset(waveNumber) {
+            this.waveNumber = waveNumber;
+            const idx = waveNumber % WAVES.length;
+            const mult = 1 + Math.floor(waveNumber / WAVES.length) * 0.3;
+            const wave = WAVES[idx];
+            this.enemyCount = Math.floor(wave.enemyCount * mult);
+            this.speed = wave.speed * mult;
+            this.spawnInterval = wave.spawnInterval / mult;
+            this.spawned = 0; this.timer = 0;
+        }
+        update(dt, targets) {
+            const missiles = [];
+            if (this.spawned >= this.enemyCount) return missiles;
+            this.timer += dt;
+            while (this.timer >= this.spawnInterval && this.spawned < this.enemyCount) {
+                this.timer -= this.spawnInterval;
+                if (targets.length === 0) continue;
+                const target = targets[Math.floor(Math.random() * targets.length)];
+                const m = new EnemyMissile(Math.random() * CANVAS_WIDTH, -10, target.x, target.y, this.speed);
+                if (this.waveNumber >= MIRV_MIN_WAVE && Math.random() < 0.25) m.isMirv = true;
+                missiles.push(m); this.spawned++;
+            }
+            return missiles;
+        }
+        isDone() { return this.spawned >= this.enemyCount; }
+    }
+
+    function checkMirvSplit(enemyMissiles, targets) {
+        const newMissiles = [];
+        for (const m of enemyMissiles) {
+            if (m.isMirv && !m.mirvSplit && !m.destroyed && m.currentY >= MIRV_SPLIT_ALTITUDE) {
+                m.mirvSplit = true;
+                for (let i = 0; i < MIRV_CHILDREN; i++) {
+                    const t = targets[Math.floor(Math.random() * targets.length)];
+                    if (t) newMissiles.push(new EnemyMissile(m.currentX, m.currentY, t.x, t.y, m.speed * 1.1));
+                }
+            }
+        }
+        return newMissiles;
+    }
+
+    class ScoreManager {
+        constructor() { this.reset(); }
+        reset() { this.score = 0; this.nextBonusCityAt = BONUS_CITY_THRESHOLD; this.waveBonus = 0; }
+        addEnemyKill() { this.score += SCORE_PER_ENEMY; }
+        calculateWaveBonus(bases, cities) {
+            let bonus = 0;
+            for (const b of bases) bonus += b.ammo * SCORE_PER_UNUSED_MISSILE;
+            for (const c of cities) if (c.alive) bonus += SCORE_PER_SURVIVING_CITY;
+            this.waveBonus = bonus; this.score += bonus; return bonus;
+        }
+        checkBonusCity() {
+            if (this.score >= this.nextBonusCityAt) { this.nextBonusCityAt += BONUS_CITY_THRESHOLD; return true; }
+            return false;
+        }
+    }
+
+    class GameAudio {
+        constructor() { this.ctx = null; this.enabled = true; }
+        init() {
+            try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
+            catch { this.enabled = false; }
+        }
+        ensure() {
+            if (!this.ctx) this.init();
+            if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+        }
+        _osc(type, freqSteps, gainSteps, duration) {
+            if (!this.enabled || !this.ctx) return;
+            const ctx = this.ctx, now = ctx.currentTime;
+            const osc = ctx.createOscillator(), gain = ctx.createGain();
+            osc.type = type;
+            for (const [t, v, method] of freqSteps) {
+                if (method === 'exp') osc.frequency.exponentialRampToValueAtTime(v, now + t);
+                else osc.frequency.setValueAtTime(v, now + t);
+            }
+            for (const [t, v, method] of gainSteps) {
+                if (method === 'exp') gain.gain.exponentialRampToValueAtTime(v, now + t);
+                else gain.gain.setValueAtTime(v, now + t);
+            }
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.start(now); osc.stop(now + duration);
+        }
+        playLaunch() {
+            this._osc('sawtooth',
+                [[0, 800, 'set'], [0.15, 200, 'exp']],
+                [[0, 0.15, 'set'], [0.2, 0.001, 'exp']], 0.2);
+        }
+        playExplosion() {
+            this._osc('square',
+                [[0, 150, 'set'], [0.5, 40, 'exp']],
+                [[0, 0.2, 'set'], [0.5, 0.001, 'exp']], 0.5);
+        }
+        playCityHit() {
+            this._osc('square',
+                [[0, 200, 'set'], [0.1, 100, 'set'], [0.2, 200, 'set'], [0.3, 100, 'set']],
+                [[0, 0.2, 'set'], [0.4, 0.001, 'exp']], 0.4);
+        }
+        playWaveClear() {
+            this._osc('sine',
+                [[0, 440, 'set'], [0.15, 554, 'set'], [0.3, 659, 'set'], [0.45, 880, 'set']],
+                [[0, 0.15, 'set'], [0.6, 0.001, 'exp']], 0.6);
+        }
+        playGameOver() {
+            this._osc('sawtooth',
+                [[0, 300, 'set'], [1.5, 50, 'exp']],
+                [[0, 0.2, 'set'], [1.5, 0.001, 'exp']], 1.5);
+        }
+    }
+
+    // ===== RENDERER =====
+
+    class Renderer {
+        constructor(ctx) {
+            this.ctx = ctx;
+            this.stars = [];
+            for (let i = 0; i < 60; i++) {
+                this.stars.push({ x: Math.random() * CANVAS_WIDTH, y: Math.random() * (GROUND_Y - 50), b: 0.3 + Math.random() * 0.7 });
+            }
+            this.screenShake = 0; this.shakeX = 0; this.shakeY = 0;
+        }
+        shake(intensity) { this.screenShake = intensity || 8; }
+        clear(waveNumber) {
+            const ctx = this.ctx;
+            if (this.screenShake > 0) {
+                this.shakeX = (Math.random() - 0.5) * this.screenShake;
+                this.shakeY = (Math.random() - 0.5) * this.screenShake;
+                this.screenShake *= 0.9;
+                if (this.screenShake < 0.5) this.screenShake = 0;
+            } else { this.shakeX = 0; this.shakeY = 0; }
+            ctx.save(); ctx.translate(this.shakeX, this.shakeY);
+            ctx.fillStyle = WAVE_COLORS[(waveNumber || 0) % WAVE_COLORS.length].sky;
+            ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        }
+        restore() { this.ctx.restore(); }
+        drawStars() {
+            for (const s of this.stars) {
+                this.ctx.fillStyle = `rgba(255,255,255,${s.b})`;
+                this.ctx.fillRect(s.x, s.y, 1.5, 1.5);
+            }
+        }
+        drawGround() {
+            this.ctx.fillStyle = '#8B4513';
+            this.ctx.fillRect(0, GROUND_Y, CANVAS_WIDTH, GROUND_HEIGHT);
+            this.ctx.fillStyle = '#654321';
+            this.ctx.fillRect(0, GROUND_Y, CANVAS_WIDTH, 3);
+        }
+        drawBases(bases) {
+            const ctx = this.ctx;
+            for (const base of bases) {
+                if (!base.alive) {
+                    ctx.fillStyle = '#555';
+                    ctx.fillRect(base.x - 15, base.y - 3, 30, 6);
+                    continue;
+                }
+                ctx.fillStyle = '#4a7a4a';
+                ctx.beginPath();
+                ctx.moveTo(base.x - base.width / 2, base.y);
+                ctx.lineTo(base.x - 10, base.y - base.height);
+                ctx.lineTo(base.x + 10, base.y - base.height);
+                ctx.lineTo(base.x + base.width / 2, base.y);
+                ctx.closePath(); ctx.fill();
+                ctx.fillStyle = '#aaffaa';
+                const tw = 3, gap = 2, total = base.ammo * (tw + gap) - gap;
+                const sx = base.x - total / 2;
+                for (let i = 0; i < base.ammo; i++) ctx.fillRect(sx + i * (tw + gap), base.y - base.height - 8, tw, 5);
+            }
+        }
+        drawCities(cities) {
+            const ctx = this.ctx;
+            for (const city of cities) {
+                if (!city.alive) {
+                    ctx.fillStyle = '#444';
+                    ctx.fillRect(city.x - city.width / 2, city.y - 3, city.width, 5);
+                    ctx.fillStyle = '#333';
+                    for (let i = 0; i < 4; i++) ctx.fillRect(city.x - city.width / 2 + Math.random() * city.width, city.y - 2 - Math.random() * 3, 4, 3);
+                    continue;
+                }
+                for (const b of city.buildings) {
+                    ctx.fillStyle = '#00cccc';
+                    ctx.fillRect(b.x, city.y - b.h, b.w, b.h);
+                    ctx.fillStyle = '#ffff66';
+                    for (let wy = city.y - b.h + 3; wy < city.y - 2; wy += 5)
+                        for (let wx = b.x + 2; wx < b.x + b.w - 2; wx += 4)
+                            if (Math.random() > 0.3) ctx.fillRect(wx, wy, 2, 2);
+                }
+            }
+        }
+        drawPlayerMissiles(missiles) {
+            const ctx = this.ctx;
+            for (const m of missiles) {
+                ctx.strokeStyle = '#6666ff'; ctx.lineWidth = 1.5;
+                ctx.beginPath(); ctx.moveTo(m.startX, m.startY); ctx.lineTo(m.currentX, m.currentY); ctx.stroke();
+                ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(m.currentX, m.currentY, 2, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = 'rgba(100,100,255,0.4)'; ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(m.targetX - 6, m.targetY); ctx.lineTo(m.targetX + 6, m.targetY);
+                ctx.moveTo(m.targetX, m.targetY - 6); ctx.lineTo(m.targetX, m.targetY + 6);
+                ctx.stroke();
+            }
+        }
+        drawEnemyMissiles(missiles, waveNumber) {
+            const ctx = this.ctx;
+            const colors = WAVE_COLORS[(waveNumber || 0) % WAVE_COLORS.length];
+            for (const m of missiles) {
+                if (m.destroyed) continue;
+                ctx.strokeStyle = colors.trail; ctx.lineWidth = 1.5;
+                ctx.beginPath(); ctx.moveTo(m.startX, m.startY); ctx.lineTo(m.currentX, m.currentY); ctx.stroke();
+                ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(m.currentX, m.currentY, 2.5, 0, Math.PI * 2); ctx.fill();
+                if (m.isMirv && !m.mirvSplit) {
+                    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1;
+                    ctx.beginPath(); ctx.arc(m.currentX, m.currentY, 5, 0, Math.PI * 2); ctx.stroke();
+                }
+            }
+        }
+        drawExplosions(explosions) {
+            const ctx = this.ctx;
+            for (const e of explosions) {
+                if (e.done || e.radius <= 0) continue;
+                const g = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, e.radius);
+                if (e.isEnemy) {
+                    g.addColorStop(0, 'rgba(255,200,100,0.9)');
+                    g.addColorStop(0.5, 'rgba(255,100,0,0.6)');
+                    g.addColorStop(1, 'rgba(255,50,0,0.1)');
+                } else {
+                    g.addColorStop(0, 'rgba(255,255,255,1)');
+                    g.addColorStop(0.3, 'rgba(255,255,100,0.8)');
+                    g.addColorStop(0.6, 'rgba(255,150,0,0.6)');
+                    g.addColorStop(1, 'rgba(255,50,0,0.1)');
+                }
+                ctx.fillStyle = g; ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+        drawCrosshair(x, y) {
+            const ctx = this.ctx;
+            ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(x - 10, y); ctx.lineTo(x + 10, y);
+            ctx.moveTo(x, y - 10); ctx.lineTo(x, y + 10);
+            ctx.stroke();
+        }
+        drawHUD(score, wave, highScore) {
+            const ctx = this.ctx;
+            ctx.fillStyle = '#ffffff'; ctx.font = '18px "Courier New", monospace';
+            ctx.textAlign = 'left'; ctx.fillText('SCORE: ' + score, 15, 25);
+            ctx.textAlign = 'center'; ctx.fillText('WAVE ' + (wave + 1), CANVAS_WIDTH / 2, 25);
+            ctx.textAlign = 'right'; ctx.fillText('HIGH: ' + highScore, CANVAS_WIDTH - 15, 25);
+        }
+        drawTitle() {
+            const ctx = this.ctx;
+            ctx.fillStyle = '#ff4444'; ctx.font = 'bold 64px "Courier New", monospace';
+            ctx.textAlign = 'center'; ctx.fillText('MISSILE COMMAND', CANVAS_WIDTH / 2, 180);
+            ctx.fillStyle = '#ffffff'; ctx.font = '20px "Courier New", monospace';
+            ctx.fillText('CLICK TO START', CANVAS_WIDTH / 2, 280);
+            ctx.fillStyle = '#888888'; ctx.font = '14px "Courier New", monospace';
+            ctx.fillText('Defend your cities from incoming missiles', CANVAS_WIDTH / 2, 340);
+            ctx.fillText('Click to launch counter-missiles', CANVAS_WIDTH / 2, 365);
+            ctx.fillText('Nearest base with ammo fires automatically', CANVAS_WIDTH / 2, 390);
+        }
+        drawWaveClear(wave, bonus) {
+            const ctx = this.ctx;
+            ctx.fillStyle = '#ffff44'; ctx.font = 'bold 36px "Courier New", monospace';
+            ctx.textAlign = 'center'; ctx.fillText('WAVE ' + (wave + 1) + ' COMPLETE', CANVAS_WIDTH / 2, 200);
+            ctx.fillStyle = '#ffffff'; ctx.font = '22px "Courier New", monospace';
+            ctx.fillText('BONUS: ' + bonus, CANVAS_WIDTH / 2, 260);
+        }
+        drawGameOver(score) {
+            const ctx = this.ctx;
+            ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            ctx.fillStyle = '#ff0000'; ctx.font = 'bold 72px "Courier New", monospace';
+            ctx.textAlign = 'center'; ctx.fillText('THE END', CANVAS_WIDTH / 2, 220);
+            ctx.fillStyle = '#ffffff'; ctx.font = '28px "Courier New", monospace';
+            ctx.fillText('FINAL SCORE: ' + score, CANVAS_WIDTH / 2, 300);
+            ctx.fillStyle = '#aaaaaa'; ctx.font = '18px "Courier New", monospace';
+            ctx.fillText('CLICK TO PLAY AGAIN', CANVAS_WIDTH / 2, 370);
+        }
+    }
+
+    // ===== INPUT =====
+
+    class Input {
+        constructor(canvas) {
+            this.canvas = canvas;
+            this.mouseX = CANVAS_WIDTH / 2; this.mouseY = CANVAS_HEIGHT / 2;
+            this.clicks = [];
+            // Mouse
+            canvas.addEventListener('mousemove', (e) => {
+                const rect = canvas.getBoundingClientRect();
+                this.mouseX = (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+                this.mouseY = (e.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
+            });
+            canvas.addEventListener('click', (e) => {
+                const rect = canvas.getBoundingClientRect();
+                this.clicks.push({
+                    x: (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width),
+                    y: (e.clientY - rect.top) * (CANVAS_HEIGHT / rect.height),
+                });
+            });
+            // Touch
+            canvas.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                const touch = e.touches[0];
+                const rect = canvas.getBoundingClientRect();
+                this.mouseX = (touch.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+                this.mouseY = (touch.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
+            }, { passive: false });
+            canvas.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const touch = e.touches[0];
+                const rect = canvas.getBoundingClientRect();
+                const x = (touch.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+                const y = (touch.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
+                this.mouseX = x; this.mouseY = y;
+                this.clicks.push({ x, y });
+            }, { passive: false });
+        }
+        consumeClicks() { const c = this.clicks; this.clicks = []; return c; }
+    }
+
+    // ===== GAME =====
+
+    const State = { TITLE: 0, PLAYING: 1, WAVE_CLEAR: 2, GAME_OVER: 3 };
+
+    class Game {
+        constructor(renderer, input) {
+            this.renderer = renderer; this.input = input;
+            this.audio = new GameAudio(); this.scoreManager = new ScoreManager();
+            this.spawner = new Spawner();
+            this.highScore = parseInt(localStorage.getItem('missileCommandHighScore') || '0');
+            this.state = State.TITLE; this.stateTimer = 0; this.waveNumber = 0;
+            this.bases = BASE_POSITIONS.map(p => new Base(p.x, p.y));
+            this.cities = CITY_POSITIONS.map(p => new City(p.x, p.y));
+            this.playerMissiles = []; this.enemyMissiles = []; this.explosions = [];
+        }
+        update(dt) {
+            if (this.state === State.TITLE) { this.updateTitle(); }
+            else if (this.state === State.PLAYING) { this.updatePlaying(dt); }
+            else if (this.state === State.WAVE_CLEAR) { this.updateWaveClear(dt); }
+            else if (this.state === State.GAME_OVER) { this.updateGameOver(dt); }
+        }
+        render() {
+            const r = this.renderer;
+            r.clear(this.waveNumber); r.drawStars(); r.drawGround();
+            r.drawBases(this.bases); r.drawCities(this.cities);
+            r.drawEnemyMissiles(this.enemyMissiles, this.waveNumber);
+            r.drawPlayerMissiles(this.playerMissiles); r.drawExplosions(this.explosions);
+            if (this.state !== State.TITLE) r.drawHUD(this.scoreManager.score, this.waveNumber, this.highScore);
+            r.drawCrosshair(this.input.mouseX, this.input.mouseY);
+            if (this.state === State.TITLE) r.drawTitle();
+            else if (this.state === State.WAVE_CLEAR) r.drawWaveClear(this.waveNumber, this.scoreManager.waveBonus);
+            else if (this.state === State.GAME_OVER) r.drawGameOver(this.scoreManager.score);
+            r.restore();
+        }
+        updateTitle() {
+            if (this.input.consumeClicks().length > 0) { this.audio.ensure(); this.startNewGame(); }
+        }
+        updatePlaying(dt) {
+            for (const click of this.input.consumeClicks()) {
+                if (click.y < GROUND_Y) this.launchPlayerMissile(click.x, click.y);
+            }
+            const targets = this.getAliveTargets();
+            this.enemyMissiles.push(...this.spawner.update(dt, targets));
+            this.enemyMissiles.push(...checkMirvSplit(this.enemyMissiles, targets));
+            for (const m of this.playerMissiles) m.update(dt);
+            for (const m of this.enemyMissiles) m.update(dt);
+            for (const e of this.explosions) e.update(dt);
+            for (const m of this.playerMissiles) {
+                if (m.arrived) {
+                    this.explosions.push(new Explosion(m.targetX, m.targetY));
+                    this.audio.playExplosion(); m.arrived = false;
+                }
+            }
+            for (const m of checkCollisions(this.explosions, this.enemyMissiles)) {
+                this.scoreManager.addEnemyKill();
+                this.explosions.push(new Explosion(m.currentX, m.currentY, true));
+            }
+            for (const hit of checkGroundHits(this.enemyMissiles, this.bases, this.cities)) {
+                this.explosions.push(new Explosion(hit.missile.targetX, hit.missile.targetY, true));
+                this.renderer.shake(6); this.audio.playCityHit();
+            }
+            this.playerMissiles = this.playerMissiles.filter(m => !m.done);
+            this.enemyMissiles = this.enemyMissiles.filter(m => !m.done);
+            this.explosions = this.explosions.filter(e => !e.done);
+            if (this.spawner.isDone() && this.enemyMissiles.length === 0 && this.explosions.length === 0) this.onWaveClear();
+            if (!this.cities.some(c => c.alive)) this.onGameOver();
+        }
+        updateWaveClear(dt) {
+            this.stateTimer += dt; this.input.consumeClicks();
+            if (this.stateTimer > 3) this.startNextWave();
+        }
+        updateGameOver(dt) {
+            this.stateTimer += dt;
+            if (this.stateTimer > 1.5) { if (this.input.consumeClicks().length > 0) this.state = State.TITLE; }
+            else this.input.consumeClicks();
+        }
+        launchPlayerMissile(tx, ty) {
+            let best = null, bestD = Infinity;
+            for (const b of this.bases) {
+                if (!b.hasAmmo()) continue;
+                const d = Math.sqrt((tx - b.x) ** 2 + (ty - b.y) ** 2);
+                if (d < bestD) { bestD = d; best = b; }
+            }
+            if (best) {
+                best.useAmmo();
+                this.playerMissiles.push(new PlayerMissile(best.x, best.y - best.height, tx, ty));
+                this.audio.playLaunch();
+            }
+        }
+        getAliveTargets() {
+            return [...this.cities.filter(c => c.alive), ...this.bases.filter(b => b.alive)];
+        }
+        startNewGame() {
+            this.scoreManager.reset(); this.waveNumber = 0;
+            this.playerMissiles = []; this.enemyMissiles = []; this.explosions = [];
+            for (const b of this.bases) b.reset();
+            for (const c of this.cities) c.restore();
+            this.spawner.reset(0); this.state = State.PLAYING;
+        }
+        startNextWave() {
+            this.waveNumber++;
+            this.playerMissiles = []; this.enemyMissiles = []; this.explosions = [];
+            for (const b of this.bases) b.reset();
+            this.spawner.reset(this.waveNumber); this.state = State.PLAYING;
+        }
+        onWaveClear() {
+            this.audio.playWaveClear();
+            this.scoreManager.calculateWaveBonus(this.bases, this.cities);
+            if (this.scoreManager.checkBonusCity()) {
+                const dead = this.cities.find(c => !c.alive);
+                if (dead) dead.restore();
+            }
+            this.stateTimer = 0; this.state = State.WAVE_CLEAR;
+        }
+        onGameOver() {
+            this.audio.playGameOver();
+            if (this.scoreManager.score > this.highScore) {
+                this.highScore = this.scoreManager.score;
+                localStorage.setItem('missileCommandHighScore', String(this.highScore));
+            }
+            this.stateTimer = 0; this.state = State.GAME_OVER;
+        }
+    }
+
+    // ===== BOOT =====
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = CANVAS_WIDTH; canvas.height = CANVAS_HEIGHT;
+
+    function resize() {
+        const wr = window.innerWidth / window.innerHeight;
+        const gr = CANVAS_WIDTH / CANVAS_HEIGHT;
+        let w, h;
+        if (wr > gr) { h = window.innerHeight; w = h * gr; }
+        else { w = window.innerWidth; h = w / gr; }
+        canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    }
+    window.addEventListener('resize', resize); resize();
+
+    const game = new Game(new Renderer(ctx), new Input(canvas));
+
+    let lastTime = 0;
+    const TICK = 1 / 60;
+    let accum = 0;
+    function frame(ts) {
+        const dt = Math.min((ts - lastTime) / 1000, 0.25);
+        lastTime = ts; accum += dt;
+        while (accum >= TICK) { game.update(TICK); accum -= TICK; }
+        game.render();
+        requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(function(ts) { lastTime = ts; requestAnimationFrame(frame); });
+
+    })();
+    </script>
+</body>
+</html>
