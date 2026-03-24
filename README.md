@@ -45,29 +45,33 @@ A bonus city is restored every 10,000 points.
 
 ### Quick Start
 
-No build tools or dependencies required. Just serve the files with any HTTP server:
+No build tools, dependencies, or server required. Everything is bundled into a single `index.html` file.
+
+**Option 1: Just open the file**
+
+Double-click `index.html` in your file browser. It works directly from `file://`.
+
+**Option 2: Clone and open**
 
 ```bash
-# Clone the repo
 git clone https://github.com/argusbrown/missile_command.git
 cd missile_command
-
-# Option 1: Python
-python3 -m http.server 8000
-
-# Option 2: Node.js
-npx serve .
-
-# Option 3: PHP
-php -S localhost:8000
+open index.html    # macOS
+xdg-open index.html  # Linux
+start index.html   # Windows
 ```
 
-Then open [http://localhost:8000](http://localhost:8000) in your browser.
+**Option 3: Serve locally (optional)**
+
+```bash
+python3 -m http.server 8000
+# open http://localhost:8000
+```
 
 ### Requirements
 
 - A modern web browser (Chrome, Firefox, Safari, Edge)
-- A local HTTP server (ES modules require serving over HTTP, not `file://`)
+- That's it — no server needed
 
 ## Project Structure
 
