@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Missile Command</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body {
             width: 100%; height: 100%; overflow: hidden;
             background: #000; display: flex; justify-content: center; align-items: center;
+            touch-action: none; overscroll-behavior: none;
         }
         #gameCanvas { cursor: none; display: block; image-rendering: pixelated; }
     </style>
@@ -497,6 +498,7 @@
             this.canvas = canvas;
             this.mouseX = CANVAS_WIDTH / 2; this.mouseY = CANVAS_HEIGHT / 2;
             this.clicks = [];
+            // Mouse
             canvas.addEventListener('mousemove', (e) => {
                 const rect = canvas.getBoundingClientRect();
                 this.mouseX = (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
@@ -509,6 +511,23 @@
                     y: (e.clientY - rect.top) * (CANVAS_HEIGHT / rect.height),
                 });
             });
+            // Touch
+            canvas.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                const touch = e.touches[0];
+                const rect = canvas.getBoundingClientRect();
+                this.mouseX = (touch.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+                this.mouseY = (touch.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
+            }, { passive: false });
+            canvas.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const touch = e.touches[0];
+                const rect = canvas.getBoundingClientRect();
+                const x = (touch.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+                const y = (touch.clientY - rect.top) * (CANVAS_HEIGHT / rect.height);
+                this.mouseX = x; this.mouseY = y;
+                this.clicks.push({ x, y });
+            }, { passive: false });
         }
         consumeClicks() { const c = this.clicks; this.clicks = []; return c; }
     }
