@@ -375,10 +375,28 @@
                 ctx.lineTo(base.x + 10, base.y - base.height);
                 ctx.lineTo(base.x + base.width / 2, base.y);
                 ctx.closePath(); ctx.fill();
-                ctx.fillStyle = '#aaffaa';
-                const tw = 3, gap = 2, total = base.ammo * (tw + gap) - gap;
-                const sx = base.x - total / 2;
-                for (let i = 0; i < base.ammo; i++) ctx.fillRect(sx + i * (tw + gap), base.y - base.height - 8, tw, 5);
+                if (base.ammo > 0) {
+                    const mW = 3, mH = 10, sp = 5;
+                    const bc = Math.min(base.ammo, 5), tc = Math.max(0, base.ammo - 5);
+                    const bTW = bc * (mW + sp) - sp, bSX = base.x - bTW / 2, bY = base.y - 4;
+                    for (let i = 0; i < bc; i++) {
+                        const mx = bSX + i * (mW + sp);
+                        ctx.fillStyle = '#aaffaa'; ctx.fillRect(mx, bY - mH, mW, mH);
+                        ctx.fillStyle = '#ffffff'; ctx.beginPath();
+                        ctx.moveTo(mx, bY - mH); ctx.lineTo(mx + mW / 2, bY - mH - 3); ctx.lineTo(mx + mW, bY - mH);
+                        ctx.closePath(); ctx.fill();
+                    }
+                    if (tc > 0) {
+                        const tTW = tc * (mW + sp) - sp, tSX = base.x - tTW / 2, tY = bY - mH - 4;
+                        for (let i = 0; i < tc; i++) {
+                            const mx = tSX + i * (mW + sp);
+                            ctx.fillStyle = '#aaffaa'; ctx.fillRect(mx, tY - mH, mW, mH);
+                            ctx.fillStyle = '#ffffff'; ctx.beginPath();
+                            ctx.moveTo(mx, tY - mH); ctx.lineTo(mx + mW / 2, tY - mH - 3); ctx.lineTo(mx + mW, tY - mH);
+                            ctx.closePath(); ctx.fill();
+                        }
+                    }
+                }
             }
         }
         drawCities(cities) {

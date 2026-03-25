@@ -88,14 +88,53 @@ export class Renderer {
             ctx.closePath();
             ctx.fill();
 
-            // Ammo ticks
-            ctx.fillStyle = '#aaffaa';
-            const tickWidth = 3;
-            const gap = 2;
-            const totalWidth = base.ammo * (tickWidth + gap) - gap;
-            const startX = base.x - totalWidth / 2;
-            for (let i = 0; i < base.ammo; i++) {
-                ctx.fillRect(startX + i * (tickWidth + gap), base.y - base.height - 8, tickWidth, 5);
+            // Missiles stacked at the base (like the original arcade game)
+            // Draw up to 10 small missile shapes arranged in rows
+            if (base.ammo > 0) {
+                const missileW = 3;
+                const missileH = 10;
+                const spacing = 5;
+                // Arrange in two rows: bottom row up to 5, top row remainder
+                const bottomCount = Math.min(base.ammo, 5);
+                const topCount = Math.max(0, base.ammo - 5);
+
+                // Bottom row
+                const bottomTotalW = bottomCount * (missileW + spacing) - spacing;
+                const bottomStartX = base.x - bottomTotalW / 2;
+                const bottomY = base.y - 4;
+                for (let i = 0; i < bottomCount; i++) {
+                    const mx = bottomStartX + i * (missileW + spacing);
+                    // Missile body
+                    ctx.fillStyle = '#aaffaa';
+                    ctx.fillRect(mx, bottomY - missileH, missileW, missileH);
+                    // Missile tip
+                    ctx.fillStyle = '#ffffff';
+                    ctx.beginPath();
+                    ctx.moveTo(mx, bottomY - missileH);
+                    ctx.lineTo(mx + missileW / 2, bottomY - missileH - 3);
+                    ctx.lineTo(mx + missileW, bottomY - missileH);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+
+                // Top row
+                if (topCount > 0) {
+                    const topTotalW = topCount * (missileW + spacing) - spacing;
+                    const topStartX = base.x - topTotalW / 2;
+                    const topY = bottomY - missileH - 4;
+                    for (let i = 0; i < topCount; i++) {
+                        const mx = topStartX + i * (missileW + spacing);
+                        ctx.fillStyle = '#aaffaa';
+                        ctx.fillRect(mx, topY - missileH, missileW, missileH);
+                        ctx.fillStyle = '#ffffff';
+                        ctx.beginPath();
+                        ctx.moveTo(mx, topY - missileH);
+                        ctx.lineTo(mx + missileW / 2, topY - missileH - 3);
+                        ctx.lineTo(mx + missileW, topY - missileH);
+                        ctx.closePath();
+                        ctx.fill();
+                    }
+                }
             }
         }
     }
