@@ -105,3 +105,7 @@ missile_command/
 - **HTML5 Canvas 2D** — 960×540 logical resolution, scales to fit any window
 - **Web Audio API** — procedural retro sound effects
 - **localStorage** — high score persistence
+
+## Built With AI
+
+This project was built with [Claude Opus 4.6](https://www.anthropic.com/claude) as an experiment using the Claude mobile app.
